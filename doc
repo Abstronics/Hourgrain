@@ -1,0 +1,26 @@
+The diagram shows the wiring. Here are the parts it doesn’t show.
+
+Pin map
+
+From	To	Pins
+Nano D11, D13, D10	Matrix 1	DIN, CLK, CS
+Nano 5V, GND	Matrix 1	VCC, GND
+Matrix 1 DOUT	Matrix 2 DIN	the chain
+Matrix 1 CLK, CS, VCC, GND	Matrix 2 CLK, CS, VCC, GND	in parallel, same signals
+Nano A4, A5	MPU6050	SDA, SCL
+Nano 5V, GND	MPU6050	VCC, GND
+Nano D9, GND	Buzzer	+ and -
+
+What the diagram leaves out
+
+Matrix 2 shares wires. The chain only draws DOUT to DIN. CLK, CS, VCC and GND go to both matrices from the same lines. Many people forget this and wonder why the second matrix stays dark.
+Buzzer pin. D9 is my suggestion. Nothing in your notes says which pin you used, so change it if you already wired another.
+Buzzer type. An active buzzer just needs the pin set HIGH. A passive one needs tone(). A 5V buzzer often draws more than the 20 mA a Nano pin should supply, so put an NPN transistor (2N2222, 1k resistor to the base) between D9 and the buzzer if you see weak sound or resets.
+MPU6050 power. Most breakout boards (GY-521) have a regulator and take 5V on VCC. A bare chip needs 3.3V. Leave the AD0 pin unconnected for address 0x68.
+Matrix order. The matrix closest to the Nano in the chain is device 0 in LedControl. If the sand falls into the wrong matrix, you wired the chain the other way round.
+
+Power problems to plan for
+
+Brightness. Two MAX7219 modules with every LED on at full intensity can pull far more current than a Nano’s USB supply wants to give. Set a low intensity in code. For a timer you don’t need full brightness.
+Decoupling. Add a 100 µF capacitor across 5V and GND near the matrices. This helps if the display flickers when the buzzer fires.
+Battery. Feed the Nano’s VIN pin with 7 to 12 V, or a regulated 5 V into the 5V pin. Never put a raw battery voltage above 5 V straight into the 5V pin.
