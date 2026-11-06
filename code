@@ -1,0 +1,238 @@
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <LedControl.h>
+
+// ---------- CONFIG ----------
+#define PIN_DIN 11
+#define PIN_CLK 13
+#define PIN_CS  10
+
+#define START_DELAY_MS 3000   // after power-up AND after every flip
+#define DROP_START_MS  6000   // gap between grains when the top is full
+#define DROP_END_MS    3430   // gap when the top is nearly empty
+#define STEP_MS        900    // fall animation speed
+#define BRIGHTNESS     5
+
+const uint8_t hwAddr[2] = {0, 1};      // [0] = top matrix when upright, [1] = bottom
+const uint8_t ROT[2]    = {3, 1};
+const bool MIRROR[2]    = {false, false};
+
+// MPU6050: Z is negative when upright. DOWN_SIGN -1 makes "upright" read positive.
+#define DOWN_SIGN        -1
+#define FLIP_THRESHOLD   4.0f   // m/s^2; must pass this to count as upright / inverted
+#define FLIP_CONFIRM_MS  600    // orientation must hold this long before flipping
+#define DEBUG_GRAVITY    0      // 1 = print filtered value on Serial (115200)
+// ----------------------------
+
+LedControl lc = LedControl(PIN_DIN, PIN_CLK, PIN_CS, 2);
+Adafruit_MPU6050 mpu;
+
+// grid[m][x][y]: physical coords of matrix m, (0,0) = its top tip when upright.
+// Matrix 0's neck pixel is (7,7), matrix 1's neck pixel is (0,0).
+bool grid[2][8][8];
+bool moved[8][8];
+unsigned long startTime, lastStep = 0, lastNeck = 0, lastMpu = 0, pendingSince = 0;
+
+bool up = true;                // true = matrix 0 is physically on top
+bool pending = false;
+bool mpuOk = false;
+bool srcSettled = true;        // source matrix has stopped moving
+bool firstDrop = true;         // no grain released yet since power-up / flip
+float gDown = 10.0f;           // filtered vertical reading, positive = upright
+
+uint8_t srcM() { return up ? 0 : 1; }   // matrix on top (holds the sand)
+uint8_t rcvM() { return up ? 1 : 0; }   // matrix on the bottom (receives)
+
+// Local coords: (0,0) = neck end, (7,7) = far tip, for BOTH matrices.
+bool &cell(uint8_t m, uint8_t lx, uint8_t ly) {
+  return (m == 0) ? grid[0][7 - lx][7 - ly] : grid[1][lx][ly];
+}
+
+void hwMap(uint8_t m, uint8_t x, uint8_t y, uint8_t &r, uint8_t &c) {
+  switch (ROT[m]) {
+    case 0: r = y;     c = x;     break;
+    case 1: r = x;     c = 7 - y; break;
+    case 2: r = 7 - y; c = 7 - x; break;
+    default: r = 7 - x; c = y;    break;
+  }
+  if (MIRROR[m]) c = 7 - c;
+}
+
+void render() {
+  uint8_t buf[2][8];
+  memset(buf, 0, sizeof(buf));
+  for (uint8_t m = 0; m < 2; m++)
+    for (uint8_t x = 0; x < 8; x++)
+      for (uint8_t y = 0; y < 8; y++)
+        if (grid[m][x][y]) {
+          uint8_t r, c; hwMap(m, x, y, r, c);
+          buf[m][r] |= (0x80 >> c);
+        }
+  for (uint8_t m = 0; m < 2; m++)
+    for (uint8_t r = 0; r < 8; r++)
+      lc.setRow(hwAddr[m], r, buf[m][r]);
+}
+
+uint8_t countGrains(uint8_t m) {
+  uint8_t n = 0;
+  for (uint8_t x = 0; x < 8; x++)
+    for (uint8_t y = 0; y < 8; y++)
+      if (grid[m][x][y]) n++;
+  return n;
+}
+
+// dir = +1: grains fall away from the neck (receiver)
+// dir = -1: grains fall toward the neck (source after a flip)
+// Returns true if any grain moved.
+bool stepMatrix(uint8_t m, int8_t dir) {
+  bool any = false;
+  memset(moved, 0, sizeof(moved));
+  uint8_t start = random(64);
+  for (uint8_t i = 0; i < 64; i++) {
+    uint8_t idx = (start + i * 37) & 63;
+    int8_t x = idx >> 3, y = idx & 7;
+    if (!cell(m, x, y) || moved[x][y]) continue;
+
+    int8_t x1 = x + dir, y1 = y + dir;
+    bool xin = (x1 >= 0 && x1 <= 7);
+    bool yin = (y1 >= 0 && y1 <= 7);
+    int8_t tx = -1, ty = -1;
+
+    if (xin && yin && !cell(m, x1, y1)) { tx = x1; ty = y1; }
+    else {
+      bool a = xin && !cell(m, x1, y);
+      bool b = yin && !cell(m, x, y1);
+      if (a && b) { if (random(2)) { tx = x1; ty = y; } else { tx = x; ty = y1; } }
+      else if (a) { tx = x1; ty = y; }
+      else if (b) { tx = x; ty = y1; }
+    }
+    if (tx >= 0) {
+      cell(m, x, y) = false;
+      cell(m, tx, ty) = true;
+      moved[tx][ty] = true;
+      any = true;
+    }
+  }
+  return any;
+}
+
+// Remove the grain farthest from the neck (the top-most one), middle first on ties
+bool takeTopGrain(uint8_t m) {
+  int8_t bestD = -1, bestOff = 99, bx = -1, by = -1;
+  for (int8_t x = 0; x < 8; x++)
+    for (int8_t y = 0; y < 8; y++)
+      if (cell(m, x, y)) {
+        int8_t d = x + y;
+        int8_t off = abs(x - y);
+        if (d > bestD || (d == bestD && off < bestOff)) { bestD = d; bestOff = off; bx = x; by = y; }
+      }
+  if (bx < 0) return false;
+  cell(m, bx, by) = false;
+  return true;
+}
+
+// Called on every loop pass (not only on animation ticks) so the gap is exact.
+void tryRelease(unsigned long now) {
+  uint8_t s = srcM(), r = rcvM();
+  if (!srcSettled) return;
+  if (now - startTime < START_DELAY_MS) return;
+  if (cell(r, 0, 0)) return;                       // neck end still occupied
+
+  uint8_t rem = countGrains(s);                    // grains left on top
+  if (rem == 0) return;
+  unsigned long gap = DROP_END_MS +
+      (unsigned long)(DROP_START_MS - DROP_END_MS) * rem / 64;
+  if (!firstDrop && now - lastNeck < gap) return;
+
+  if (takeTopGrain(s)) {
+    cell(r, 0, 0) = true;
+    lastNeck = now;
+    firstDrop = false;
+    render();
+  }
+}
+
+// ---------- MPU6050 ----------
+void readDown() {
+  if (!mpuOk) return;
+  sensors_event_t a, g, t;
+  mpu.getEvent(&a, &g, &t);
+  float z = DOWN_SIGN * a.acceleration.z;     // m/s^2, positive when upright
+  gDown = gDown * 0.8f + z * 0.2f;
+}
+
+void doFlip(bool newUp) {
+  up = newUp;                // roles swap; nothing is moved or redrawn
+  srcSettled = false;        // the sand now on top has to fall first
+  startTime = millis();      // restart the start delay
+  firstDrop = true;          // first drop after a flip waits only for the delay
+}
+
+void checkOrientation() {
+  readDown();
+  bool want = up;
+  if (gDown > FLIP_THRESHOLD) want = true;
+  else if (gDown < -FLIP_THRESHOLD) want = false;
+
+  if (want == up) { pending = false; return; }
+  if (!pending) { pending = true; pendingSince = millis(); return; }
+  if (millis() - pendingSince >= FLIP_CONFIRM_MS) { pending = false; doFlip(want); }
+}
+
+void setup() {
+#if DEBUG_GRAVITY
+  Serial.begin(115200);
+#endif
+  Wire.begin();
+  mpuOk = mpu.begin();
+  if (mpuOk) {
+    mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  }
+#if DEBUG_GRAVITY
+  Serial.println(mpuOk ? "MPU6050 found" : "MPU6050 NOT found - running upright only");
+#endif
+
+  for (uint8_t m = 0; m < 2; m++) {
+    lc.shutdown(m, false);
+    lc.setIntensity(m, BRIGHTNESS);
+    lc.clearDisplay(m);
+  }
+  randomSeed(analogRead(A0));
+
+  for (uint8_t i = 0; i < 20; i++) { readDown(); delay(10); }   // let the filter settle
+  up = (gDown >= 0);
+
+  memset(grid, 0, sizeof(grid));
+  uint8_t s = srcM();
+  for (uint8_t x = 0; x < 8; x++)
+    for (uint8_t y = 0; y < 8; y++) grid[s][x][y] = true;       // source starts full
+  srcSettled = true;
+  firstDrop = true;
+  render();
+  startTime = millis();
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  if (now - lastMpu >= 50) {
+    lastMpu = now;
+    checkOrientation();
+#if DEBUG_GRAVITY
+    static unsigned long lastPrint = 0;
+    if (now - lastPrint >= 200) { lastPrint = now; Serial.println(gDown); }
+#endif
+  }
+
+  tryRelease(now);
+
+  if (now - lastStep >= STEP_MS) {
+    lastStep = now;
+    bool srcMoved = stepMatrix(srcM(), -1);   // sand on top settles toward the neck
+    stepMatrix(rcvM(), +1);                   // sand on the bottom falls away from the neck
+    srcSettled = !srcMoved;
+    render();
+  }
+}
