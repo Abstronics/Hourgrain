@@ -4,10 +4,6 @@
 
 Two 8x8 LED matrices drop pixel "sand" one grain at a time. Flip the device and an MPU6050 motion sensor reverses the flow. A buzzer sounds when time is up.
 
-![Hourgrain demo](docs/demo.gif)
-
-> Built for [Hackathon name] on Devpost. Devpost submission: [link]
-
 ---
 
 ## Why Hourgrain
@@ -93,7 +89,7 @@ In the code:
 grainInterval_ms = (minutes * 60 * 1000) / 64
 ```
 
-Change the `minutes` value [name of the variable in your sketch] and the interval is recalculated. Nothing else needs to change.
+
 
 | Session | Total (s) | Time per grain |
 |---|---|---|
@@ -105,7 +101,7 @@ Change the `minutes` value [name of the variable in your sketch] and the interva
 
 The fall animation takes a fixed time, and the device waits out the rest of the interval before the next grain.
 
-**Accuracy:** the Nano's clock is a ceramic resonator, not a precise crystal, so some drift is expected. [Add your measured error here, for example: a 25-minute session measured X min Y s on a phone stopwatch.]
+**Accuracy:** the Nano's clock is a ceramic resonator, not a precise crystal, so some drift is expected.
 
 ## Orientation sensing
 
@@ -118,22 +114,13 @@ Measured MPU6050 readings (m/s^2):
 
 The magnitudes are not a clean 9.8 on either side, so the flip threshold is based on the measured sign change of Z and not on theoretical gravity.
 
-## Enclosure
-
-The case is 3D printed. Files are in `docs/`.
-
-- Material: [PLA / PETG]
-- Color: [color]
-- Parts: [number of STL files]
-- Print settings: [layer height, infill, wall thickness]
-
 ## Challenges
 
 - **Diamond layout:** rotating the matrices 45 degrees meant remapping pixel coordinates so grains fall tip to tip. The rotation values were calibrated by trial until the sand moved the right way.
 - **Sand feel:** the fall had to look like sand and not a blinking dot, so the timing was tuned by eye.
 - **Axis and thresholds:** finding which MPU6050 axis is vertical and setting a flip threshold from real readings.
 - **Flip behavior:** the sand in the new top matrix should fall toward the neck without jumping.
-- [Add your real problems here: wiring, power, case fit, buzzer noise.]
+  
 
 ## What I learned
 
@@ -142,11 +129,6 @@ The case is 3D printed. Files are in `docs/`.
 - Turning a real-world behavior into timing math and animation logic
 - Designing hardware and code together, because case size and sensor placement affected the software
 
-## Limitations
-
-- Timing accuracy is limited by the Nano's clock.
-- [Session length is set in code / by button: state how it works today.]
-- [Battery and charging status.]
 
 ## Future work
 
@@ -158,7 +140,3 @@ The case is 3D printed. Files are in `docs/`.
 
 Okunlola Abdulbasit, Mechatronics Engineering, Bells University of Technology, Nigeria.
 
-
-## License
-
-MIT. See `LICENSE`.
